@@ -72,7 +72,7 @@ class Music(commands.Cog):
             'retries': 3,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android'],
+                    'player_client': ['android', 'web'],
                     'player_skip': ['configs']
                 }
             },
@@ -104,7 +104,11 @@ class Music(commands.Cog):
                 if 'entries' in info:
                     info = info['entries'][0]
 
+                # Correção principal para o problema da URL
                 audio_url = info.get('url')
+                if not audio_url and info.get('id'):
+                    audio_url = f"https://youtube.com/watch?v={info['id']}"
+                
                 if not audio_url:
                     await ctx.send("❌ Erro ao obter áudio")
                     return await self.play_next(ctx)
@@ -126,7 +130,7 @@ class Music(commands.Cog):
                     )
                 )
 
-                await ctx.send(f"▶️ Tocando: **{title}**\n🔗 {webpage_url}")
+                await ctx.send(f"▶️ Tocando: **{title}**\n🔗 {webpage_url if webpage_url else 'Link não disponível'}")
 
         except Exception as e:
             print(f"[ERRO play_yt] {e}")
