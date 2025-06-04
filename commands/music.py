@@ -104,62 +104,78 @@ class Music(commands.Cog):
             await ctx.send("🎶 Fila de reprodução terminada")
 
     async def play_yt(self, ctx, query):
-        print(f"[play_yt] Iniciando reprodução para: {query}")
-        
-        ytdl_format_options = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'quiet': True,
-            'default_search': 'auto',
-            'source_address': '0.0.0.0',
-            'extract_flat': True,
-            'socket_timeout': 10,
-            'retries': 10,
+    ytdl_options = {
+        'format': 'bestaudio/best',
+        'quiet': False,
+        'no_warnings': False,
+        'ignoreerrors': True,
+        'default_search': 'auto',
+        'source_address': '0.0.0.0',
+        'extract_flat': False,
+        'socket_timeout': 15,
+        'retries': 3,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'player_skip': ['configs'],
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/'
         }
+    }
 
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
-        }
+    ffmpeg_options = {
+        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+        'options': '-vn -filter:a "volume=0.7"'
+    }
 
-        ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+    try:
+        with yt_dlp.YoutubeDL(ytdl_options) as ytdl:
+            info = await self.bot.loop.run_in_executor(
+                None,
+                lambda: ytdl.extract_info(
+                    f"ytsearch:{query}" if not query.startswith(('http://', 'https://')) else query,
+                    download=False
+                )
+            )
 
-        try:
-            print(f"[play_yt] Extraindo info para: {query}")
-            info = ytdl.extract_info(f"ytsearch:{query}" if not query.startswith(('http://', 'https://')) else query, download=False)
-            
+            if not info:
+                await ctx.send("❌ Nenhum resultado encontrado.")
+                return await self.play_next(ctx)
+                
             if 'entries' in info:
                 info = info['entries'][0]
 
-            audio_url = info['url']
-            title = info.get('title', 'Música Desconhecida')
-            webpage_url = info.get('webpage_url', 'URL não disponível')
-            print(f"[play_yt] Info extraída - Título: {title}, URL: {audio_url}")
+            if not info.get('url'):
+                await ctx.send("❌ Não foi possível obter o stream de áudio.")
+                return await self.play_next(ctx)
 
-            print(f"[play_yt] Criando fonte de áudio com FFmpeg")
+            audio_url = info['url']
+            title = info.get('title', query)
+            webpage_url = info.get('webpage_url', f"https://youtu.be/{info.get('id', '')}")
+
             source = discord.FFmpegPCMAudio(
-                audio_url,
                 executable=self.ffmpeg_path,
+                source=audio_url,
                 **ffmpeg_options
             )
-            
-            audio_source = discord.PCMVolumeTransformer(source, volume=0.7)
 
-            def after_playing(error):
-                if error:
-                    print(f"[ERRO after_playing] Erro na reprodução: {error}")
-                else:
-                    print("[after_playing] Reprodução concluída sem erros")
-                asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
+            ctx.voice_client.play(
+                source,
+                after=lambda e: asyncio.run_coroutine_threadsafe(
+                    self.play_next(ctx),
+                    self.bot.loop
+                )
+            )
 
-            print("[play_yt] Iniciando reprodução no canal de voz")
-            ctx.voice_client.play(audio_source, after=after_playing)
             await ctx.send(f"▶️ Tocando: **{title}**\n🔗 {webpage_url}")
 
-        except Exception as e:
-            print(f"[ERRO play_yt] Erro ao tocar: {str(e)}")
-            await ctx.send(f"❌ Erro ao tocar: {e}")
-            await self.play_next(ctx)
+    except Exception as e:
+        await ctx.send(f"❌ Erro: {str(e)[:200]}")
+        await self.play_next(ctx)
 
     async def process_spotify_url(self, ctx, url):
         print(f"[process_spotify_url] Processando URL do Spotify: {url}")
