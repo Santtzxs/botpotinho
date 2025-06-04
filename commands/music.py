@@ -3,16 +3,15 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
-from dotenv import load_dotenv
 import re
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import time
 import imageio_ffmpeg
 
-load_dotenv()
 SPOTIFY_CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET')
+
 
 class Music(commands.Cog):
     def __init__(self, bot):
