@@ -3,5 +3,5 @@ yt-dlp==2023.11.16
 python-dotenv==1.0.0
 spotipy==2.23.0
 imageio-ffmpeg==0.4.9
-aiohttp==3.8.5
+aiohttp==3.8.1
 deep-translator==1.11.4
