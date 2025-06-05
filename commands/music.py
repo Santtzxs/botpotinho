@@ -72,13 +72,13 @@ class Music(commands.Cog):
             'retries': 3,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
-                    'player_skip': ['configs']
+                    'player_client': ['android_embedded'],  # Alterado para android_embedded
+                    'player_skip': ['configs', 'webpage']   # Adicionado webpage para pular etapas problemáticas
                 }
             },
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9'
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
+                'Accept-Language': 'pt-BR,pt;q=0.9'
             }
         }
 
@@ -98,23 +98,23 @@ class Music(commands.Cog):
                 )
 
                 if not info:
-                    await ctx.send("❌ Nada encontrado")
+                    await ctx.send("❌ Nenhum resultado encontrado")
                     return await self.play_next(ctx)
                     
                 if 'entries' in info:
                     info = info['entries'][0]
+                    if not info:
+                        await ctx.send("❌ Vídeo indisponível ou restrito")
+                        return await self.play_next(ctx)
 
-                # Correção principal para o problema da URL
-                audio_url = info.get('url')
-                if not audio_url and info.get('id'):
-                    audio_url = f"https://youtube.com/watch?v={info['id']}"
-                
-                if not audio_url:
-                    await ctx.send("❌ Erro ao obter áudio")
-                    return await self.play_next(ctx)
-
+                # Sistema de fallback para URLs
+                audio_url = info.get('url', f"https://youtu.be/{info.get('id', '')}")
                 title = info.get('title', query)
                 webpage_url = info.get('webpage_url', f"https://youtu.be/{info.get('id', '')}")
+
+                if not audio_url.startswith('http'):
+                    await ctx.send("⚠️ Usando fallback para URL alternativa")
+                    audio_url = f"https://youtu.be/{info.get('id', '')}"
 
                 source = discord.FFmpegPCMAudio(
                     executable=self.ffmpeg_path,
@@ -130,11 +130,11 @@ class Music(commands.Cog):
                     )
                 )
 
-                await ctx.send(f"▶️ Tocando: **{title}**\n🔗 {webpage_url if webpage_url else 'Link não disponível'}")
+                await ctx.send(f"🎵 Tocando: **{title}**\n🔗 {webpage_url if webpage_url else 'Link não disponível'}")
 
         except Exception as e:
-            print(f"[ERRO play_yt] {e}")
-            await ctx.send(f"❌ Erro: {str(e)[:200]}")
+            print(f"[ERRO play_yt] {type(e).__name__}: {e}")
+            await ctx.send("❌ Erro ao reproduzir. Pulando para próxima...")
             await self.play_next(ctx)
 
     async def process_spotify_url(self, ctx, url):
