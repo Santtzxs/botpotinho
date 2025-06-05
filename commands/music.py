@@ -51,6 +51,22 @@ class Music(commands.Cog):
             return False
         return True
 
+    async def ensure_spotify_connection(self):
+        if not self.spotify:
+            if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+                try:
+                    auth_manager = SpotifyClientCredentials(
+                        client_id=SPOTIFY_CLIENT_ID,
+                        client_secret=SPOTIFY_CLIENT_SECRET
+                    )
+                    self.spotify = spotipy.Spotify(auth_manager=auth_manager)
+                    return True
+                except Exception as e:
+                    print(f"[ERRO Spotify] Falha na reconexão: {e}")
+                    return False
+            return False
+        return True
+
     async def play_next(self, ctx):
         if len(self.song_queue) > 0:
             self.current_song = self.song_queue.pop(0)
@@ -64,77 +80,318 @@ class Music(commands.Cog):
         
         ytdl_options = {
             'format': 'bestaudio/best',
-            'quiet': False,
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'ignoreerrors': True,
-            'extract_flat': False,
+            'extract_flat': True,
+            'default_search': 'ytsearch',
             'socket_timeout': 15,
-            'retries': 3,
+            'retries': 5,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android_embedded'],  # Alterado para android_embedded
-                    'player_skip': ['configs', 'webpage']   # Adicionado webpage para pular etapas problemáticas
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android', 'web'],
                 }
             },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
-                'Accept-Language': 'pt-BR,pt;q=0.9'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
             }
         }
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 20M -analyzeduration 20M',
             'options': '-vn -filter:a "volume=0.7"'
         }
 
         try:
             with yt_dlp.YoutubeDL(ytdl_options) as ytdl:
+                # Verifica se é uma URL ou busca
+                is_url = query.startswith(('http://', 'https://'))
+                
+                # Extrai informações
                 info = await self.bot.loop.run_in_executor(
                     None,
                     lambda: ytdl.extract_info(
-                        f"ytsearch:{query}" if not query.startswith(('http://', 'https://')) else query,
+                        query if is_url else f"ytsearch:{query}",
                         download=False
                     )
                 )
 
+                # Verifica se há resultados
                 if not info:
-                    await ctx.send("❌ Nenhum resultado encontrado")
+                    await ctx.send("❌ Nenhum resultado encontrado para sua busca.")
                     return await self.play_next(ctx)
                     
+                # Se for uma busca, pega o primeiro resultado
                 if 'entries' in info:
-                    info = info['entries'][0]
-                    if not info:
-                        await ctx.send("❌ Vídeo indisponível ou restrito")
+                    entries = [e for e in info['entries'] if e is not None]
+                    if not entries:
+                        await ctx.send("❌ Nenhum vídeo encontrado ou vídeo restrito.")
                         return await self.play_next(ctx)
+                    info = entries[0]
 
-                # Sistema de fallback para URLs
-                audio_url = info.get('url', f"https://youtu.be/{info.get('id', '')}")
+                # Obtém URL do áudio
+                audio_url = None
+                if 'url' in info:
+                    audio_url = info['url']
+                else:
+                    # Tenta encontrar a melhor URL de áudio nos formatos disponíveis
+                    for fmt in info.get('formats', []):
+                        if fmt.get('acodec') != 'none':
+                            audio_url = fmt.get('url')
+                            if audio_url:
+                                break
+                    
+                    if not audio_url and 'requested_formats' in info:
+                        for fmt in info['requested_formats']:
+                            if fmt.get('acodec') != 'none':
+                                audio_url = fmt.get('url')
+                                if audio_url:
+                                    break
+
+                if not audio_url:
+                    audio_url = f"https://youtu.be/{info.get('id', '')}"
+
+                # Prepara metadados para exibição
                 title = info.get('title', query)
                 webpage_url = info.get('webpage_url', f"https://youtu.be/{info.get('id', '')}")
 
-                if not audio_url.startswith('http'):
-                    await ctx.send("⚠️ Usando fallback para URL alternativa")
-                    audio_url = f"https://youtu.be/{info.get('id', '')}"
+                # Verifica se o bot ainda está conectado
+                if not ctx.voice_client or not ctx.voice_client.is_connected():
+                    await ctx.send("❌ O bot foi desconectado do canal de voz.")
+                    return
 
+                # Cria a fonte de áudio
                 source = discord.FFmpegPCMAudio(
                     executable=self.ffmpeg_path,
                     source=audio_url,
                     **ffmpeg_options
                 )
 
+                # Reproduz a música
                 ctx.voice_client.play(
                     source,
                     after=lambda e: asyncio.run_coroutine_threadsafe(
                         self.play_next(ctx),
                         self.bot.loop
+                    ) if not e else print(f"Erro na reprodução: {e}")
+                )
+
+                await ctx.send(f"🎵 Tocando: **{title}**\n🔗 {webpage_url}")
+
+        except yt_dlp.utils.DownloadError as e:
+            print(f"[ERRO Download] {e}")
+            await ctx.send("❌ Erro ao baixar o vídeo. O vídeo pode estar indisponível ou restrito.")
+            await self.play_next(ctx)
+        except discord.ClientException as e:
+            print(f"[ERRO Discord] {e}")
+            await ctx.send("❌ Erro na conexão de voz. Verifique se o bot está conectado corretamente.")
+        except Exception as e:
+            print(f"[ERRO play_yt] {type(e).__name__}: {e}")
+            await ctx.send("❌ Erro inesperado ao reproduzir a música.")
+            await self.play_next(ctx)import discord
+from discord.ext import commands
+import yt_dlp
+import asyncio
+import os
+import re
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import time
+import imageio_ffmpeg
+
+SPOTIFY_CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET')
+
+class Music(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.song_queue = []
+        self.current_song = None
+        self.spotify = None
+        self.last_spotify_request = 0
+        
+        print("[Music Cog] Inicializando cog de música...")
+        
+        self.ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        print(f"[FFmpeg] Caminho: {self.ffmpeg_path}")
+        
+        if not os.path.exists(self.ffmpeg_path):
+            print("[ERRO FFmpeg] Executável não encontrado!")
+        else:
+            print("[FFmpeg] Executável encontrado")
+
+        if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+            print("[Spotify] Conectando...")
+            try:
+                auth_manager = SpotifyClientCredentials(
+                    client_id=SPOTIFY_CLIENT_ID,
+                    client_secret=SPOTIFY_CLIENT_SECRET
+                )
+                self.spotify = spotipy.Spotify(auth_manager=auth_manager)
+                print("✅ [Spotify] Conectado")
+            except Exception as e:
+                print(f"⚠️ [Spotify] Erro: {e}")
+                self.spotify = None
+        else:
+            print("⚠️ [Spotify] Credenciais não configuradas")
+
+    async def ensure_voice(self, ctx):
+        if not ctx.author.voice:
+            await ctx.send("❌ Entre em um canal de voz primeiro!")
+            return False
+        return True
+
+    async def ensure_spotify_connection(self):
+        if not self.spotify:
+            if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+                try:
+                    auth_manager = SpotifyClientCredentials(
+                        client_id=SPOTIFY_CLIENT_ID,
+                        client_secret=SPOTIFY_CLIENT_SECRET
+                    )
+                    self.spotify = spotipy.Spotify(auth_manager=auth_manager)
+                    return True
+                except Exception as e:
+                    print(f"[ERRO Spotify] Falha na reconexão: {e}")
+                    return False
+            return False
+        return True
+
+    async def play_next(self, ctx):
+        if len(self.song_queue) > 0:
+            self.current_song = self.song_queue.pop(0)
+            await self.play_yt(ctx, self.current_song)
+        else:
+            self.current_song = None
+            await ctx.send("🎶 Fila vazia")
+
+    async def play_yt(self, ctx, query):
+        print(f"[play_yt] Buscando: {query}")
+        
+        ytdl_options = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extract_flat': True,
+            'default_search': 'ytsearch',
+            'socket_timeout': 15,
+            'retries': 5,
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android', 'web'],
+                }
+            },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+            }
+        }
+
+        ffmpeg_options = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 20M -analyzeduration 20M',
+            'options': '-vn -filter:a "volume=0.7"'
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ytdl_options) as ytdl:
+                # Verifica se é uma URL ou busca
+                is_url = query.startswith(('http://', 'https://'))
+                
+                # Extrai informações
+                info = await self.bot.loop.run_in_executor(
+                    None,
+                    lambda: ytdl.extract_info(
+                        query if is_url else f"ytsearch:{query}",
+                        download=False
                     )
                 )
 
-                await ctx.send(f"🎵 Tocando: **{title}**\n🔗 {webpage_url if webpage_url else 'Link não disponível'}")
+                # Verifica se há resultados
+                if not info:
+                    await ctx.send("❌ Nenhum resultado encontrado para sua busca.")
+                    return await self.play_next(ctx)
+                    
+                # Se for uma busca, pega o primeiro resultado
+                if 'entries' in info:
+                    entries = [e for e in info['entries'] if e is not None]
+                    if not entries:
+                        await ctx.send("❌ Nenhum vídeo encontrado ou vídeo restrito.")
+                        return await self.play_next(ctx)
+                    info = entries[0]
 
+                # Obtém URL do áudio
+                audio_url = None
+                if 'url' in info:
+                    audio_url = info['url']
+                else:
+                    # Tenta encontrar a melhor URL de áudio nos formatos disponíveis
+                    for fmt in info.get('formats', []):
+                        if fmt.get('acodec') != 'none':
+                            audio_url = fmt.get('url')
+                            if audio_url:
+                                break
+                    
+                    if not audio_url and 'requested_formats' in info:
+                        for fmt in info['requested_formats']:
+                            if fmt.get('acodec') != 'none':
+                                audio_url = fmt.get('url')
+                                if audio_url:
+                                    break
+
+                if not audio_url:
+                    audio_url = f"https://youtu.be/{info.get('id', '')}"
+
+                # Prepara metadados para exibição
+                title = info.get('title', query)
+                webpage_url = info.get('webpage_url', f"https://youtu.be/{info.get('id', '')}")
+
+                # Verifica se o bot ainda está conectado
+                if not ctx.voice_client or not ctx.voice_client.is_connected():
+                    await ctx.send("❌ O bot foi desconectado do canal de voz.")
+                    return
+
+                # Cria a fonte de áudio
+                source = discord.FFmpegPCMAudio(
+                    executable=self.ffmpeg_path,
+                    source=audio_url,
+                    **ffmpeg_options
+                )
+
+                # Reproduz a música
+                ctx.voice_client.play(
+                    source,
+                    after=lambda e: asyncio.run_coroutine_threadsafe(
+                        self.play_next(ctx),
+                        self.bot.loop
+                    ) if not e else print(f"Erro na reprodução: {e}")
+                )
+
+                await ctx.send(f"🎵 Tocando: **{title}**\n🔗 {webpage_url}")
+
+        except yt_dlp.utils.DownloadError as e:
+            print(f"[ERRO Download] {e}")
+            await ctx.send("❌ Erro ao baixar o vídeo. O vídeo pode estar indisponível ou restrito.")
+            await self.play_next(ctx)
+        except discord.ClientException as e:
+            print(f"[ERRO Discord] {e}")
+            await ctx.send("❌ Erro na conexão de voz. Verifique se o bot está conectado corretamente.")
         except Exception as e:
             print(f"[ERRO play_yt] {type(e).__name__}: {e}")
-            await ctx.send("❌ Erro ao reproduzir. Pulando para próxima...")
+            await ctx.send("❌ Erro inesperado ao reproduzir a música.")
             await self.play_next(ctx)
 
     async def process_spotify_url(self, ctx, url):
